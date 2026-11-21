@@ -6,7 +6,6 @@
   <title>Deshal 13 (দেশাল ১৩) — National Institute of Textile Engineering and Research (NITER)</title>
   <script src="https://cdn.tailwindcss.com/3.4.17"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+Bengali:wght@500;600;700&display=swap" rel="stylesheet" />
@@ -150,9 +149,17 @@
 
     const SUPABASE_URL = 'https://ayojlrnnodfbvimbrlsb.supabase.co';
     const SUPABASE_KEY = 'sb_publishable_ceLWmwdwCeXHp59N6FWcRA_lCkIHicL';
-    const sbClient = (window.supabase && window.supabase.createClient)
-      ? window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY)
-      : null;
+    let sbClient = null;
+    try {
+      if (window.supabase && typeof window.supabase.createClient === 'function') {
+        sbClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
+          auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false }
+        });
+      }
+    } catch (e) {
+      console.error('Supabase init error:', e);
+      sbClient = null;
+    }
 
     function getSyncPayload() {
       return {
@@ -177,15 +184,26 @@
           .maybeSingle();
         if (!error && data && data.data && Object.keys(data.data).length > 0) {
           const d = data.data;
-          if (d.settings) state.settings = d.settings;
-          if (Array.isArray(d.batches) && d.batches.length) state.batches = d.batches;
-          if (d.batchCovers) state.batchCovers = d.batchCovers;
-          if (Array.isArray(d.slides) && d.slides.length) state.slides = d.slides;
-          if (Array.isArray(d.members)) state.members = d.members;
-          if (Array.isArray(d.accounts)) state.accounts = d.accounts;
-          if (Array.isArray(d.albums) && d.albums.length) state.albums = d.albums;
-          if (Array.isArray(d.photos)) state.photos = d.photos;
-          persistState();
+          const defaults = getDefaultData();
+          if (d.settings && typeof d.settings === 'object') state.settings = { ...defaults.settings, ...d.settings };
+          if (Array.isArray(d.batches) && d.batches.length) state.batches = d.batches.filter(Boolean);
+          if (d.batchCovers && typeof d.batchCovers === 'object') state.batchCovers = { ...defaults.batchCovers, ...d.batchCovers };
+          if (Array.isArray(d.slides) && d.slides.length) state.slides = d.slides.filter(s => s && s.image_url);
+          if (!state.slides.length) state.slides = defaults.slides;
+          if (Array.isArray(d.members)) state.members = d.members.filter(Boolean);
+          if (Array.isArray(d.accounts)) {
+            const byPhone = new Map();
+            d.accounts.forEach(a => { if (a && a.phone) byPhone.set(a.phone, a); });
+            (state.accounts || []).forEach(a => { if (a && a.phone && !byPhone.has(a.phone)) byPhone.set(a.phone, a); });
+            state.accounts = Array.from(byPhone.values());
+          }
+          if (Array.isArray(d.albums) && d.albums.length) state.albums = d.albums.filter(Boolean);
+          if (Array.isArray(d.photos)) state.photos = d.photos.filter(Boolean);
+          if (state.currentUserPhone) {
+            const matchedMem = state.members.find(m => m && m.phone === state.currentUserPhone);
+            if (matchedMem) state.loggedInMemberId = matchedMem.id;
+          }
+          persistState(true);
           render();
         }
       } catch {}
@@ -244,63 +262,6 @@
       } catch { return false; }
     }
 
-    // =========================================================================
-    // CLOUD SYNC CONFIG (Paste your free Supabase URL & Anon Key below)
-    // =========================================================================
-    const DESHAL_SUPABASE_URL = 'YOUR_SUPABASE_URL';
-    const DESHAL_SUPABASE_ANON_KEY = 'YOUR_SUPABASE_ANON_KEY';
-
-    const isCloudEnabled =
-      typeof window.supabase !== 'undefined' &&
-      DESHAL_SUPABASE_URL.startsWith('https://') &&
-      !DESHAL_SUPABASE_URL.includes('YOUR_SUPABASE_URL') &&
-      DESHAL_SUPABASE_ANON_KEY.length > 20;
-
-    const sb = isCloudEnabled
-      ? window.supabase.createClient(DESHAL_SUPABASE_URL, DESHAL_SUPABASE_ANON_KEY)
-      : null;
-
-    async function cloudSyncFromServer() {
-      if (!sb) return;
-      try {
-        const [setRes, batRes, sldRes, memRes, albRes, phoRes] = await Promise.all([
-          sb.from('site_settings').select('*').eq('id', 1).maybeSingle(),
-          sb.from('batches').select('*').order('display_order', { ascending: true }),
-          sb.from('hero_slides').select('*').order('display_order', { ascending: true }),
-          sb.from('members').select('*').order('created_at', { ascending: false }),
-          sb.from('albums').select('*').order('date', { ascending: false }),
-          sb.from('photos').select('*').order('created_at', { ascending: false })
-        ]);
-
-        if (setRes.data) {
-          state.settings = setRes.data;
-        } else {
-          await sb.from('site_settings').upsert({ id: 1, ...state.settings });
-        }
-
-        if (batRes.data && batRes.data.length > 0) {
-          state.batches = batRes.data.map(b => b.name);
-          batRes.data.forEach(b => {
-            const prev = state.batchCovers[b.name] || {};
-            state.batchCovers[b.name] = {
-              title: b.cover_title || prev.title || `${b.name} Batch`,
-              subtitle: b.cover_subtitle || prev.subtitle || 'Room 13 Brotherhood',
-              image_url: b.cover_url || prev.image_url || makeCoverSvg('#0b192c', '#1e4e8c', b.name, 'BATCH COVER')
-            };
-          });
-        }
-
-        if (sldRes.data && sldRes.data.length > 0) state.slides = sldRes.data;
-        if (memRes.data) state.members = memRes.data;
-        if (albRes.data && albRes.data.length > 0) state.albums = albRes.data;
-        if (phoRes.data && phoRes.data.length > 0) state.photos = phoRes.data;
-
-        persistState();
-        render();
-      } catch (err) {
-        console.error('Cloud sync error:', err);
-      }
-    }
     const DEFAULT_BATCHES = ['5th','6th','7th','8th','9th','10th','11th','12th','13th','14th'];
     const DEFAULT_ALUMNI_BATCHES = ['5th','6th','7th','8th','9th','10th','11th'];
     const BLOOD_GROUPS = ['A+','A-','B+','B-','AB+','AB-','O+','O-'];
@@ -429,7 +390,7 @@
       ...saved
     };
 
-    function persistState() {
+    function persistState(skipCloudSync = false) {
       try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify({
           settings: state.settings,
@@ -447,7 +408,7 @@
       } catch {
         // Ignore storage quota errors
       }
-      if (state.adminUnlocked) syncAdminToSupabase();
+      if (!skipCloudSync && state.adminUnlocked) syncAdminToSupabase();
     }
 
     function showToast(msg) {
@@ -476,11 +437,11 @@
         btn.classList.toggle('text-blue-800', active && btn.getAttribute('data-nav') !== 'admin');
       });
 
-      const acc = state.accounts.find(a => a.phone === state.currentUserPhone) || null;
+      const acc = (state.accounts || []).find(a => a && a.phone === state.currentUserPhone) || null;
       const desktopAuth = document.getElementById('desktop-auth-actions');
       const mobileAuth = document.getElementById('mobile-auth-actions');
       if (acc) {
-        const fname = escapeHtml(acc.full_name.split(' ')[0] || 'Account');
+        const fname = escapeHtml(String(acc.full_name || 'Account').split(' ')[0] || 'Account');
         if (desktopAuth) {
           desktopAuth.innerHTML = `
             <button type="button" data-nav="profile" class="rounded-lg bg-emerald-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm hover:bg-emerald-700 transition-colors">
@@ -1549,7 +1510,6 @@
           short_note: fd.get('short_note') || '',
           is_alumni: fd.get('is_alumni') === 'true'
         } : item);
-        if (sb) { const upd = state.members.find(x => x.id === id); if (upd) sb.from('members').upsert(upd); }
         persistState();
         modal.classList.add('hidden');
         modal.classList.remove('flex');
@@ -1583,17 +1543,28 @@
     }
 
     function render() {
-      updateNavBadges();
       const root = document.getElementById('app-root');
-      if (state.view === 'home') root.innerHTML = renderHome();
-      else if (state.view === 'portal') root.innerHTML = renderPortal();
-      else if (state.view === 'memories') root.innerHTML = renderMemories();
-      else if (state.view === 'join') root.innerHTML = renderJoin();
-      else if (state.view === 'profile') root.innerHTML = renderProfile();
-      else if (state.view === 'login') root.innerHTML = renderLogin();
-      else if (state.view === 'admin') root.innerHTML = renderAdmin();
-      bindViewEvents();
-      startSlideAutoPlay();
+      try {
+        updateNavBadges();
+        if (!Array.isArray(state.slides) || !state.slides.length) state.slides = getDefaultData().slides;
+        if (!Array.isArray(state.members)) state.members = [];
+        if (!Array.isArray(state.albums)) state.albums = getDefaultData().albums;
+        if (!Array.isArray(state.photos)) state.photos = getDefaultData().photos;
+        if (state.view === 'home') root.innerHTML = renderHome();
+        else if (state.view === 'portal') root.innerHTML = renderPortal();
+        else if (state.view === 'memories') root.innerHTML = renderMemories();
+        else if (state.view === 'join') root.innerHTML = renderJoin();
+        else if (state.view === 'profile') root.innerHTML = renderProfile();
+        else if (state.view === 'login') root.innerHTML = renderLogin();
+        else if (state.view === 'admin') root.innerHTML = renderAdmin();
+        bindViewEvents();
+        startSlideAutoPlay();
+      } catch (err) {
+        console.error('Render error:', err);
+        if (root) {
+          root.innerHTML = '<div class="mx-auto max-w-xl px-4 py-16 text-center"><div class="rounded-2xl border border-rose-200 bg-rose-50 p-6 text-rose-800"><p class="font-bold">Display error recovered</p><p class="mt-2 text-sm">' + escapeHtml(err && err.message ? err.message : String(err)) + '</p><button type="button" onclick="localStorage.removeItem(STORAGE_KEY);location.reload();" class="mt-4 rounded-xl bg-rose-700 px-4 py-2 text-xs font-semibold text-white">Reset Local Cache & Reload</button></div></div>';
+        }
+      }
     }
 
     function bindViewEvents() {
@@ -1737,11 +1708,12 @@
           const file = e.target.files && e.target.files[0];
           if (!file) return;
           const reader = new FileReader();
-          reader.onload = () => {
-            state.members = state.members.map(m => m.phone === state.currentUserPhone ? { ...m, avatar_url: reader.result } : m);
+          reader.onload = async () => {
+            const compressedAvatar = await compressImageDataUrl(reader.result, 480);
+            state.members = state.members.map(m => m.phone === state.currentUserPhone ? { ...m, avatar_url: compressedAvatar } : m);
             persistState();
-            const updatedM = state.members.find(x => x.id === state.activeProfileId);
-            if (updatedM) await syncProfileToSupabase(state.activeProfileId, updatedM);
+            const updatedM = state.members.find(x => x.phone === state.currentUserPhone);
+            if (updatedM) await syncProfileToSupabase(updatedM.id, updatedM);
             showToast('Profile photo updated!');
             render();
           };
@@ -1775,8 +1747,8 @@
           } : m);
           state.accounts = state.accounts.map(a => a.phone === state.currentUserPhone ? { ...a, full_name: fd.get('full_name') } : a);
           persistState();
-          const updatedM = state.members.find(x => x.id === state.activeProfileId);
-          if (updatedM) await syncProfileToSupabase(state.activeProfileId, updatedM);
+          const updatedM = state.members.find(x => x.phone === state.currentUserPhone);
+          if (updatedM) await syncProfileToSupabase(updatedM.id, updatedM);
           showToast('Your profile has been updated!');
           render();
         });
@@ -1840,7 +1812,6 @@
         btn.addEventListener('click', () => {
           const id = btn.getAttribute('data-reject');
           state.members = state.members.filter(m => m.id !== id);
-          if (sb) { sb.from('members').delete().eq('id', id); }
           persistState();
           showToast('Member removed.');
           render();
@@ -1861,7 +1832,6 @@
             return;
           }
           state.batches.push(nb);
-          if (sb) { sb.from('batches').upsert({ name: nb, display_order: state.batches.length + 4, cover_title: `${nb} Batch`, cover_subtitle: 'New Residents of Room 13' }); }
           if (bType === 'alumni' && !state.alumniBatches.includes(nb)) {
             state.alumniBatches.push(nb);
           }
@@ -1922,7 +1892,6 @@
               subtitle: fd.get('subtitle') || prev.subtitle || 'Room 13 Brotherhood',
               image_url: imgUrl || prev.image_url || makeCoverSvg('#0b192c', '#1e4e8c', b, 'BATCH COVER')
             };
-            if (sb) { sb.from('batches').upsert({ name: b, display_order: state.batches.indexOf(b) + 5, cover_title: state.batchCovers[b].title, cover_subtitle: state.batchCovers[b].subtitle, cover_url: state.batchCovers[b].image_url }); }
             persistState();
             showToast(`${b} Batch cover photo updated!`);
             render();
@@ -1990,7 +1959,6 @@
         btn.addEventListener('click', () => {
           const id = btn.getAttribute('data-del-slide');
           state.slides = state.slides.filter(s => s.id !== id);
-          if (sb) { sb.from('hero_slides').delete().eq('id', id); }
           persistState();
           showToast('Slide deleted.');
           render();
@@ -2019,7 +1987,6 @@
           const aid = btn.getAttribute('data-del-album');
           state.albums = state.albums.filter(a => a.id !== aid);
           state.photos = state.photos.filter(p => p.album_id !== aid);
-          if (sb) { sb.from('albums').delete().eq('id', aid); }
           persistState();
           showToast('Program album deleted.');
           render();
@@ -2038,7 +2005,6 @@
             date: new Date().toISOString().slice(0, 10)
           };
           state.albums.unshift(newAlb);
-          if (sb) { sb.from('albums').upsert(newAlb); }
           persistState();
           showToast('Event album created!');
           render();
@@ -2063,7 +2029,6 @@
               thumb_url: mType === 'video' ? makeCoverSvg('#0f172a', '#065f46', '▶ VIDEO', fd.get('caption')) : ''
             };
             state.photos.unshift(newPho);
-            if (sb) { sb.from('photos').upsert(newPho); }
             persistState();
             showToast(mType === 'video' ? 'Video added to Memories gallery!' : 'Photo added to Memories gallery!');
             render();
@@ -2091,7 +2056,6 @@
           state.settings.motto = fd.get('motto');
           state.settings.about_text = fd.get('about_text');
           state.settings.notice_body = fd.get('notice_body');
-          if (sb) { sb.from('site_settings').upsert({ id: 1, ...state.settings }); }
           persistState();
           showToast('Home page content & Notice Board updated!');
           render();
@@ -2164,7 +2128,7 @@
     });
 
     render();
-    cloudSyncFromServer();
+    syncLoadFromSupabase();
   </script>
 </body>
 </html>
