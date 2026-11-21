@@ -191,28 +191,57 @@
       } catch {}
     }
 
-    async function syncJoinToSupabase(memberObj, accountObj = null) {
-      if (!sbClient) { showToast('Cloud sync offline.'); return; }
+    function compressImageDataUrl(dataUrl, maxWidth = 480) {
+      return new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => {
+          const scale = Math.min(1, maxWidth / img.width);
+          const canvas = document.createElement('canvas');
+          canvas.width = Math.round(img.width * scale);
+          canvas.height = Math.round(img.height * scale);
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          resolve(canvas.toDataURL('image/jpeg', 0.78));
+        };
+        img.onerror = () => resolve(dataUrl);
+        img.src = dataUrl;
+      });
+    }
+
+    async function syncJoinToSupabase(memberObj) {
+      if (!sbClient) return false;
       try {
-        const { error } = await sbClient.rpc('submit_member_join', { new_member: memberObj, new_account: accountObj });
-        if (error) showToast('Sync warning: ' + error.message);
-      } catch (e) { showToast('Sync error: ' + (e && e.message ? e.message : 'Network error')); }
+        const { error } = await sbClient.rpc('submit_member_join', { new_member: memberObj });
+        if (error) { showToast('Sync warning: ' + error.message); return false; }
+        return true;
+      } catch (e) {
+        showToast('Sync error: ' + (e && e.message ? e.message : 'Network error'));
+        return false;
+      }
     }
 
     async function syncProfileToSupabase(memberId, updatedObj) {
-      if (!sbClient) return;
+      if (!sbClient) return false;
       try {
-        const { error } = await sbClient.rpc('update_member_profile', { member_id: memberId, updated_member: updatedObj });
-        if (error) showToast('Profile sync error: ' + error.message);
-      } catch {}
+        const { error } = await sbClient.rpc('update_member_profile', {
+          member_id: memberId,
+          updated_member: updatedObj
+        });
+        if (error) { showToast('Profile sync error: ' + error.message); return false; }
+        return true;
+      } catch { return false; }
     }
 
     async function syncAdminToSupabase() {
-      if (!sbClient || !state.adminUnlocked) return;
+      if (!sbClient || !state.adminUnlocked) return false;
       try {
-        const { error } = await sbClient.rpc('save_deshal_admin', { admin_pass: '45678fhl', new_data: getSyncPayload() });
-        if (error) showToast('Admin sync error: ' + error.message);
-      } catch {}
+        const { error } = await sbClient.rpc('save_deshal_admin', {
+          admin_pass: '45678fhl',
+          new_data: getSyncPayload()
+        });
+        if (error) { showToast('Admin sync error: ' + error.message); return false; }
+        return true;
+      } catch { return false; }
     }
 
     // =========================================================================
@@ -1633,7 +1662,7 @@
           const file = e.target.files && e.target.files[0];
           if (!file) return;
           const reader = new FileReader();
-          reader.onload = () => { state.joinAvatarDataUrl = reader.result; render(); };
+          reader.onload = async () => { state.joinAvatarDataUrl = await compressImageDataUrl(reader.result, 480); render(); };
           reader.readAsDataURL(file);
         });
       }
@@ -1712,7 +1741,7 @@
             state.members = state.members.map(m => m.phone === state.currentUserPhone ? { ...m, avatar_url: reader.result } : m);
             persistState();
             const updatedM = state.members.find(x => x.id === state.activeProfileId);
-            if (updatedM) syncProfileToSupabase(state.activeProfileId, updatedM);
+            if (updatedM) await syncProfileToSupabase(state.activeProfileId, updatedM);
             showToast('Profile photo updated!');
             render();
           };
@@ -1722,7 +1751,7 @@
 
       const selfForm = document.getElementById('self-profile-form');
       if (selfForm) {
-        selfForm.addEventListener('submit', (e) => {
+        selfForm.addEventListener('submit', async (e) => {
           e.preventDefault();
           const fd = new FormData(selfForm);
           const batch = fd.get('batch');
@@ -1747,7 +1776,7 @@
           state.accounts = state.accounts.map(a => a.phone === state.currentUserPhone ? { ...a, full_name: fd.get('full_name') } : a);
           persistState();
           const updatedM = state.members.find(x => x.id === state.activeProfileId);
-          if (updatedM) syncProfileToSupabase(state.activeProfileId, updatedM);
+          if (updatedM) await syncProfileToSupabase(state.activeProfileId, updatedM);
           showToast('Your profile has been updated!');
           render();
         });
@@ -1755,7 +1784,7 @@
 
       const joinForm = document.getElementById('join-form');
       if (joinForm) {
-        joinForm.addEventListener('submit', (e) => {
+        joinForm.addEventListener('submit', async (e) => {
           e.preventDefault();
           const fd = new FormData(joinForm);
           const batch = fd.get('batch');
@@ -1782,7 +1811,7 @@
             avatar_url: state.joinAvatarDataUrl || ''
           };
           state.members.unshift(newMemberObj);
-          syncJoinToSupabase(newMemberObj);
+          await syncJoinToSupabase(newMemberObj);
           state.loggedInMemberId = newId;
           state.joinAvatarDataUrl = '';
           state.justRegisteredPending = true;
