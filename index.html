@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Deshal 13 (দেশাল ১৩) — National Institute of Textile Engineering and Research (NITER)</title>
   <script src="https://cdn.tailwindcss.com/3.4.17"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+Bengali:wght@500;600;700&display=swap" rel="stylesheet" />
@@ -161,6 +161,7 @@
         batchCovers: state.batchCovers,
         slides: state.slides,
         members: state.members,
+        accounts: state.accounts,
         albums: state.albums,
         photos: state.photos
       };
@@ -181,6 +182,7 @@
           if (d.batchCovers) state.batchCovers = d.batchCovers;
           if (Array.isArray(d.slides) && d.slides.length) state.slides = d.slides;
           if (Array.isArray(d.members)) state.members = d.members;
+          if (Array.isArray(d.accounts)) state.accounts = d.accounts;
           if (Array.isArray(d.albums) && d.albums.length) state.albums = d.albums;
           if (Array.isArray(d.photos)) state.photos = d.photos;
           persistState();
@@ -189,27 +191,27 @@
       } catch {}
     }
 
-    async function syncJoinToSupabase(memberObj) {
-      if (!sbClient) return;
+    async function syncJoinToSupabase(memberObj, accountObj = null) {
+      if (!sbClient) { showToast('Cloud sync offline.'); return; }
       try {
-        await sbClient.rpc('submit_member_join', { new_member: memberObj });
-      } catch {}
+        const { error } = await sbClient.rpc('submit_member_join', { new_member: memberObj, new_account: accountObj });
+        if (error) showToast('Sync warning: ' + error.message);
+      } catch (e) { showToast('Sync error: ' + (e && e.message ? e.message : 'Network error')); }
     }
 
     async function syncProfileToSupabase(memberId, updatedObj) {
       if (!sbClient) return;
       try {
-        await sbClient.rpc('update_member_profile', { member_id: memberId, updated_member: updatedObj });
+        const { error } = await sbClient.rpc('update_member_profile', { member_id: memberId, updated_member: updatedObj });
+        if (error) showToast('Profile sync error: ' + error.message);
       } catch {}
     }
 
     async function syncAdminToSupabase() {
       if (!sbClient || !state.adminUnlocked) return;
       try {
-        await sbClient.rpc('save_deshal_admin', {
-          admin_pass: '45678fhl',
-          new_data: getSyncPayload()
-        });
+        const { error } = await sbClient.rpc('save_deshal_admin', { admin_pass: '45678fhl', new_data: getSyncPayload() });
+        if (error) showToast('Admin sync error: ' + error.message);
       } catch {}
     }
 
