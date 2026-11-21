@@ -161,17 +161,70 @@
       sbClient = null;
     }
 
-    function getSyncPayload() {
+    const UNSYNCED_KEY = 'deshal13_unsynced_members_v1';
+
+    function getUnsyncedMembers() {
+      try { return JSON.parse(localStorage.getItem(UNSYNCED_KEY) || '[]') || []; } catch { return []; }
+    }
+    function saveUnsyncedMembers(arr) {
+      try { localStorage.setItem(UNSYNCED_KEY, JSON.stringify(arr || [])); } catch {}
+    }
+
+    function stripDefaultMedia(payload) {
+      const defaults = getDefaultData();
+      const defSlideUrls = new Map(defaults.slides.map(s => [s.id, s.image_url]));
+      const defPhotoUrls = new Map(defaults.photos.map(p => [p.id, p.image_url]));
+      const defCoverUrls = new Map(Object.entries(defaults.batchCovers).map(([k, v]) => [k, v.image_url]));
+
       return {
+        ...payload,
+        slides: (payload.slides || []).map(s => (s && defSlideUrls.get(s.id) === s.image_url) ? { ...s, image_url: '__DEFAULT__' } : s),
+        photos: (payload.photos || []).map(p => (p && defPhotoUrls.get(p.id) === p.image_url) ? { ...p, image_url: '__DEFAULT__' } : p),
+        batchCovers: Object.fromEntries(
+          Object.entries(payload.batchCovers || {}).map(([k, v]) => [
+            k,
+            (v && defCoverUrls.get(k) === v.image_url) ? { ...v, image_url: '__DEFAULT__' } : v
+          ])
+        )
+      };
+    }
+
+    function restoreDefaultMedia(d) {
+      const defaults = getDefaultData();
+      const defSlideUrls = new Map(defaults.slides.map(s => [s.id, s.image_url]));
+      const defPhotoUrls = new Map(defaults.photos.map(p => [p.id, p.image_url]));
+      const defCoverUrls = new Map(Object.entries(defaults.batchCovers).map(([k, v]) => [k, v.image_url]));
+
+      const slides = Array.isArray(d.slides) && d.slides.length
+        ? d.slides.filter(Boolean).map(s => (s.image_url === '__DEFAULT__' && defSlideUrls.has(s.id)) ? { ...s, image_url: defSlideUrls.get(s.id) } : s).filter(s => s.image_url && s.image_url !== '__DEFAULT__')
+        : defaults.slides;
+
+      const photos = Array.isArray(d.photos)
+        ? d.photos.filter(Boolean).map(p => (p.image_url === '__DEFAULT__' && defPhotoUrls.has(p.id)) ? { ...p, image_url: defPhotoUrls.get(p.id) } : p).filter(p => p.image_url && p.image_url !== '__DEFAULT__')
+        : defaults.photos;
+
+      const rawCovers = (d.batchCovers && typeof d.batchCovers === 'object') ? d.batchCovers : {};
+      const batchCovers = { ...defaults.batchCovers };
+      Object.entries(rawCovers).forEach(([k, v]) => {
+        if (!v) return;
+        batchCovers[k] = (v.image_url === '__DEFAULT__' && defCoverUrls.has(k)) ? { ...v, image_url: defCoverUrls.get(k) } : v;
+      });
+
+      return { slides: slides.length ? slides : defaults.slides, photos, batchCovers };
+    }
+
+    function getSyncPayload() {
+      return stripDefaultMedia({
         settings: state.settings,
         batches: state.batches,
+        alumniBatches: state.alumniBatches,
         batchCovers: state.batchCovers,
         slides: state.slides,
         members: state.members,
         accounts: state.accounts,
         albums: state.albums,
         photos: state.photos
-      };
+      });
     }
 
     async function syncLoadFromSupabase() {
@@ -185,12 +238,30 @@
         if (!error && data && data.data && Object.keys(data.data).length > 0) {
           const d = data.data;
           const defaults = getDefaultData();
+          const restored = restoreDefaultMedia(d);
           if (d.settings && typeof d.settings === 'object') state.settings = { ...defaults.settings, ...d.settings };
           if (Array.isArray(d.batches) && d.batches.length) state.batches = d.batches.filter(Boolean);
-          if (d.batchCovers && typeof d.batchCovers === 'object') state.batchCovers = { ...defaults.batchCovers, ...d.batchCovers };
-          if (Array.isArray(d.slides) && d.slides.length) state.slides = d.slides.filter(s => s && s.image_url);
-          if (!state.slides.length) state.slides = defaults.slides;
-          if (Array.isArray(d.members)) state.members = d.members.filter(Boolean);
+          if (Array.isArray(d.alumniBatches) && d.alumniBatches.length) state.alumniBatches = d.alumniBatches.filter(Boolean);
+          state.batchCovers = restored.batchCovers;
+          state.slides = restored.slides;
+          state.photos = restored.photos;
+
+          const serverMembers = Array.isArray(d.members) ? d.members.filter(Boolean) : [];
+          const unsynced = getUnsyncedMembers();
+          if (unsynced.length > 0) {
+            const serverIds = new Set(serverMembers.map(m => m.id));
+            const stillPending = unsynced.filter(m => m && m.id && !serverIds.has(m.id));
+            state.members = [...stillPending, ...serverMembers];
+            saveUnsyncedMembers(stillPending);
+            // Retry syncing any local-only member in background
+            stillPending.forEach(m => {
+              const acc = (state.accounts || []).find(a => a && a.phone === m.phone) || null;
+              syncJoinToSupabase(m, acc);
+            });
+          } else {
+            state.members = serverMembers;
+          }
+
           if (Array.isArray(d.accounts)) {
             const byPhone = new Map();
             d.accounts.forEach(a => { if (a && a.phone) byPhone.set(a.phone, a); });
@@ -198,7 +269,6 @@
             state.accounts = Array.from(byPhone.values());
           }
           if (Array.isArray(d.albums) && d.albums.length) state.albums = d.albums.filter(Boolean);
-          if (Array.isArray(d.photos)) state.photos = d.photos.filter(Boolean);
           if (state.currentUserPhone) {
             const matchedMem = state.members.find(m => m && m.phone === state.currentUserPhone);
             if (matchedMem) state.loggedInMemberId = matchedMem.id;
@@ -206,10 +276,12 @@
           persistState(true);
           render();
         }
-      } catch {}
+      } catch (e) {
+        console.error('Supabase load error:', e);
+      }
     }
 
-    function compressImageDataUrl(dataUrl, maxWidth = 480) {
+    function compressImageDataUrl(dataUrl, maxWidth = 320) {
       return new Promise((resolve) => {
         const img = new Image();
         img.onload = () => {
@@ -219,21 +291,33 @@
           canvas.height = Math.round(img.height * scale);
           const ctx = canvas.getContext('2d');
           ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-          resolve(canvas.toDataURL('image/jpeg', 0.78));
+          resolve(canvas.toDataURL('image/jpeg', 0.72));
         };
-        img.onerror = () => resolve(dataUrl);
+        img.onerror = () => {
+          showToast('Image format not supported; saved without photo.');
+          resolve('');
+        };
         img.src = dataUrl;
       });
     }
 
-    async function syncJoinToSupabase(memberObj) {
+    async function syncJoinToSupabase(memberObj, accountObj = null) {
       if (!sbClient) return false;
       try {
-        const { error } = await sbClient.rpc('submit_member_join', { new_member: memberObj });
-        if (error) { showToast('Sync warning: ' + error.message); return false; }
+        let { error } = await sbClient.rpc('submit_member_join', {
+          new_member: memberObj,
+          new_account: accountObj
+        });
+        if (error && /function|signature|parameter|argument/i.test(error.message || '')) {
+          const retry = await sbClient.rpc('submit_member_join', { new_member: memberObj });
+          error = retry.error;
+        }
+        if (error) { showToast('Cloud sync warning: ' + error.message); return false; }
+        const remaining = getUnsyncedMembers().filter(m => m && m.id !== memberObj.id);
+        saveUnsyncedMembers(remaining);
         return true;
       } catch (e) {
-        showToast('Sync error: ' + (e && e.message ? e.message : 'Network error'));
+        showToast('Cloud sync error: ' + (e && e.message ? e.message : 'Network error'));
         return false;
       }
     }
@@ -347,15 +431,16 @@
         const raw = localStorage.getItem(STORAGE_KEY);
         if (!raw) return defaults;
         const parsed = JSON.parse(raw);
+        const restored = restoreDefaultMedia(parsed);
         return {
           settings: parsed.settings || defaults.settings,
-          slides: Array.isArray(parsed.slides) && parsed.slides.length ? parsed.slides : defaults.slides,
+          slides: restored.slides,
           members: Array.isArray(parsed.members) ? parsed.members : defaults.members,
           albums: Array.isArray(parsed.albums) ? parsed.albums : defaults.albums,
-          photos: Array.isArray(parsed.photos) ? parsed.photos : defaults.photos,
+          photos: restored.photos,
           batches: Array.isArray(parsed.batches) && parsed.batches.length ? parsed.batches : defaults.batches,
           alumniBatches: Array.isArray(parsed.alumniBatches) ? parsed.alumniBatches : defaults.alumniBatches,
-          batchCovers: parsed.batchCovers || defaults.batchCovers,
+          batchCovers: restored.batchCovers,
           accounts: Array.isArray(parsed.accounts) ? parsed.accounts : defaults.accounts,
           currentUserPhone: parsed.currentUserPhone || '',
           loggedInMemberId: parsed.loggedInMemberId || ''
@@ -392,7 +477,7 @@
 
     function persistState(skipCloudSync = false) {
       try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        const compact = stripDefaultMedia({
           settings: state.settings,
           slides: state.slides,
           members: state.members,
@@ -404,7 +489,8 @@
           accounts: state.accounts,
           currentUserPhone: state.currentUserPhone,
           loggedInMemberId: state.loggedInMemberId
-        }));
+        });
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(compact));
       } catch {
         // Ignore storage quota errors
       }
@@ -1633,7 +1719,7 @@
           const file = e.target.files && e.target.files[0];
           if (!file) return;
           const reader = new FileReader();
-          reader.onload = async () => { state.joinAvatarDataUrl = await compressImageDataUrl(reader.result, 480); render(); };
+          reader.onload = async () => { state.joinAvatarDataUrl = await compressImageDataUrl(reader.result, 320); render(); };
           reader.readAsDataURL(file);
         });
       }
@@ -1709,7 +1795,7 @@
           if (!file) return;
           const reader = new FileReader();
           reader.onload = async () => {
-            const compressedAvatar = await compressImageDataUrl(reader.result, 480);
+            const compressedAvatar = await compressImageDataUrl(reader.result, 320);
             state.members = state.members.map(m => m.phone === state.currentUserPhone ? { ...m, avatar_url: compressedAvatar } : m);
             persistState();
             const updatedM = state.members.find(x => x.phone === state.currentUserPhone);
@@ -1782,13 +1868,23 @@
             status: 'approved',
             avatar_url: state.joinAvatarDataUrl || ''
           };
+          const submitBtn = joinForm.querySelector('button[type="submit"]');
+          if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Saving to Cloud...'; }
+          const accObj = (state.accounts || []).find(a => a && a.phone === state.currentUserPhone) || null;
           state.members.unshift(newMemberObj);
-          await syncJoinToSupabase(newMemberObj);
+          const unsynced = getUnsyncedMembers();
+          unsynced.unshift(newMemberObj);
+          saveUnsyncedMembers(unsynced);
           state.loggedInMemberId = newId;
           state.joinAvatarDataUrl = '';
-          state.justRegisteredPending = true;
           persistState();
-          showToast('Welcome to Deshal 13! Your profile is now live in the Directory.');
+          const synced = await syncJoinToSupabase(newMemberObj, accObj);
+          state.justRegisteredPending = true;
+          if (synced) {
+            showToast('Welcome to Deshal 13! Saved permanently to Directory.');
+          } else {
+            showToast('Saved locally; cloud sync will retry automatically.');
+          }
           render();
         });
       }
