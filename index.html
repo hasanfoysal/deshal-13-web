@@ -1759,7 +1759,7 @@
           const batch = fd.get('batch');
           const isAlumni = state.alumniBatches.includes(batch);
           const newId = 'm' + Date.now();
-          state.members.unshift({
+          const newMemberObj = {
             id: newId,
             full_name: fd.get('full_name'),
             nickname: fd.get('nickname') || '',
