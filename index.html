@@ -1098,7 +1098,7 @@
         <div class="animate-view mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8 space-y-6">
           <div class="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <div class="flex flex-wrap items-center gap-2"><span class="rounded-full bg-amber-100 px-3 py-1 text-xs font-bold text-amber-800">Admin CMS</span><span class="rounded-full px-3 py-1 text-xs font-bold ${isCloudEnabled ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-200 text-slate-700'}">${isCloudEnabled ? 'Cloud Sync Active (Global)' : 'Local Mode (Add Supabase Keys in index.html for Global Sync)'}</span></div>
+              <div class="flex flex-wrap items-center gap-2"><span class="rounded-full bg-amber-100 px-3 py-1 text-xs font-bold text-amber-800">Admin CMS</span><span class="rounded-full px-3 py-1 text-xs font-bold ${sbClient ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-200 text-slate-700'}">${sbClient ? 'Cloud Sync Active (Global)' : 'Local Mode'}</span></div>
               <h1 class="mt-2 text-3xl font-extrabold text-slate-900">Deshal 13 Admin Dashboard</h1>
             </div>
             <div class="flex items-center gap-2">
